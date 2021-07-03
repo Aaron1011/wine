@@ -3130,6 +3130,49 @@ static BOOL WINAPI CRYPT_AsnEncodeCertPolicyConstraints(
     return ret;
 }
 
+static BOOL WINAPI CRYPT_AsnEncodeRsaPubKey_Bcrypt(DWORD dwCertEncodingType,
+ LPCSTR lpszStructType, const void *pvStructInfo, DWORD dwFlags,
+ PCRYPT_ENCODE_PARA pEncodePara, BYTE *pbEncoded, DWORD *pcbEncoded)
+{
+    BOOL ret;
+
+    __TRY
+    {
+        const BCRYPT_RSAKEY_BLOB *hdr = pvStructInfo;
+
+        if (hdr->Magic != BCRYPT_RSAPUBLIC_MAGIC)
+        {
+            SetLastError(E_INVALIDARG);
+            ret = FALSE;
+        } else if (hdr->cbPublicExp != sizeof(DWORD)) {
+            ERR("Unexpected public exponent size %d\n", hdr->cbPublicExp);
+            SetLastError(E_INVALIDARG);
+            ret = FALSE;
+        }
+        else
+        {
+            DWORD *pubexp = (DWORD*) ((BYTE*)pvStructInfo + sizeof(BCRYPT_RSAKEY_BLOB));
+            CRYPT_INTEGER_BLOB modulus = { hdr->cbModulus, (BYTE*)pvStructInfo + sizeof(BCRYPT_RSAKEY_BLOB) + sizeof(DWORD) };
+            struct AsnEncodeSequenceItem items[] = { 
+             { &modulus, CRYPT_AsnEncodeUnsignedInteger, 0 },
+             { pubexp, CRYPT_AsnEncodeInt, 0 },
+            };
+
+            ret = CRYPT_AsnEncodeSequence(dwCertEncodingType, items,
+             ARRAY_SIZE(items), dwFlags, pEncodePara, pbEncoded, pcbEncoded);
+        }
+    }
+    __EXCEPT_PAGE_FAULT
+    {
+        SetLastError(STATUS_ACCESS_VIOLATION);
+        ret = FALSE;
+    }
+    __ENDTRY
+    return ret;
+
+}
+
+
 static BOOL WINAPI CRYPT_AsnEncodeRsaPubKey(DWORD dwCertEncodingType,
  LPCSTR lpszStructType, const void *pvStructInfo, DWORD dwFlags,
  PCRYPT_ENCODE_PARA pEncodePara, BYTE *pbEncoded, DWORD *pcbEncoded)
@@ -4563,6 +4606,11 @@ static CryptEncodeObjectExFunc CRYPT_GetBuiltinEncoder(DWORD dwCertEncodingType,
         case LOWORD(CMS_SIGNER_INFO):
             encodeFunc = CRYPT_AsnEncodeCMSSignerInfo;
             break;
+        case LOWORD(CNG_RSA_PUBLIC_KEY_BLOB):
+            encodeFunc = CRYPT_AsnEncodeRsaPubKey_Bcrypt;
+            break;
+        default:
+            FIXME("Unimplemented encoder for lpszStructType OID %d\n", LOWORD(lpszStructType));
         }
     }
     else if (!strcmp(lpszStructType, szOID_CERT_EXTENSIONS))
@@ -4617,6 +4665,8 @@ static CryptEncodeObjectExFunc CRYPT_GetBuiltinEncoder(DWORD dwCertEncodingType,
         encodeFunc = CRYPT_AsnEncodePolicyQualifierUserNotice;
     else if (!strcmp(lpszStructType, szOID_CTL))
         encodeFunc = CRYPT_AsnEncodeCTL;
+    else
+        FIXME("Unsupported encodoer for lpszStructType %s\n", lpszStructType);
     return encodeFunc;
 }
 

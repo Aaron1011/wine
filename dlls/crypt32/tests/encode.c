@@ -2572,6 +2572,104 @@ static void test_decodeRsaPublicKey(DWORD dwEncoding)
     }
 }
 
+static void test_encodeRsaPublicKey_Bcrypt(DWORD dwEncoding)
+{
+    BYTE toEncode[sizeof(BCRYPT_RSAKEY_BLOB) + sizeof(DWORD) + sizeof(modulus1)];
+    BCRYPT_RSAKEY_BLOB *hdr = (BCRYPT_RSAKEY_BLOB *)toEncode;
+    BOOL ret;
+    BYTE *buf = NULL;
+    DWORD bufSize = 0, i;
+    DWORD pubexp = 65537;
+
+    /* Try with a bogus magic value */
+    hdr->Magic = 1;
+    hdr->BitLength = sizeof(modulus1) * 8;
+    hdr->cbPublicExp = sizeof(DWORD);
+    hdr->cbModulus = sizeof(modulus1);
+    hdr->cbPrime1 = 0;
+    hdr->cbPrime2 = 0;
+    memcpy(toEncode + sizeof(BCRYPT_RSAKEY_BLOB), &pubexp, sizeof(DWORD));
+    memcpy(toEncode + sizeof(BCRYPT_RSAKEY_BLOB) + sizeof(DWORD), modulus1, sizeof(modulus1));
+
+    ret = pCryptEncodeObjectEx(dwEncoding, CNG_RSA_PUBLIC_KEY_BLOB,
+     toEncode, CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &bufSize);
+    ok(!ret && GetLastError() == E_INVALIDARG,
+     "Expected E_INVALIDARG, got %08x\n", GetLastError());
+    /* Finally, all valid */
+    hdr->Magic = BCRYPT_RSAPUBLIC_MAGIC;
+    for (i = 0; i < ARRAY_SIZE(rsaPubKeys); i++)
+    {
+        hdr->BitLength = rsaPubKeys[i].modulusLen * 8;
+        hdr->cbModulus = rsaPubKeys[i].modulusLen;
+        memcpy(toEncode + sizeof(BCRYPT_RSAKEY_BLOB) + sizeof(DWORD),
+         rsaPubKeys[i].modulus, rsaPubKeys[i].modulusLen);
+        ret = pCryptEncodeObjectEx(dwEncoding, CNG_RSA_PUBLIC_KEY_BLOB,
+         toEncode, CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &bufSize);
+        ok(ret, "CryptEncodeObjectEx failed: %08x\n", GetLastError());
+        if (ret)
+        {
+            ok(bufSize == rsaPubKeys[i].encoded[1] + 2,
+             "Expected size %d, got %d\n", rsaPubKeys[i].encoded[1] + 2,
+             bufSize);
+            ok(!memcmp(buf, rsaPubKeys[i].encoded, bufSize),
+             "Unexpected value\n");
+            LocalFree(buf);
+        }
+    }
+}
+
+static void test_decodeRsaPublicKey_Bcrypt(DWORD dwEncoding)
+{
+    DWORD i;
+    LPBYTE buf = NULL;
+    DWORD bufSize = 0;
+    BOOL ret;
+
+    /* Try with a bad length */
+    ret = pCryptDecodeObjectEx(dwEncoding, CNG_RSA_PUBLIC_KEY_BLOB,
+     rsaPubKeys[0].encoded, rsaPubKeys[0].encoded[1],
+     CRYPT_DECODE_ALLOC_FLAG, NULL, &buf, &bufSize);
+    ok(!ret && (GetLastError() == CRYPT_E_ASN1_EOD ||
+     GetLastError() == OSS_MORE_INPUT /* Win9x/NT4 */),
+     "Expected CRYPT_E_ASN1_EOD or OSS_MORE_INPUT, got %08x\n",
+     GetLastError());
+    /* Now try success cases */
+    for (i = 0; i < ARRAY_SIZE(rsaPubKeys); i++)
+    {
+        bufSize = 0;
+        ret = pCryptDecodeObjectEx(dwEncoding, CNG_RSA_PUBLIC_KEY_BLOB,
+         rsaPubKeys[i].encoded, rsaPubKeys[i].encoded[1] + 2,
+         CRYPT_DECODE_ALLOC_FLAG, NULL, &buf, &bufSize);
+        ok(ret, "CryptDecodeObjectEx failed: %08x\n", GetLastError());
+        if (ret)
+        {
+            BCRYPT_RSAKEY_BLOB *hdr = (BCRYPT_RSAKEY_BLOB *)buf;
+            DWORD *pubexp = (DWORD*)(buf + sizeof(BCRYPT_RSAKEY_BLOB));
+
+            ok(bufSize >= sizeof(BCRYPT_RSAKEY_BLOB) + sizeof(DWORD) +
+             rsaPubKeys[i].decodedModulusLen,
+             "Wrong size %d\n", bufSize);
+            ok(hdr->Magic == BCRYPT_RSAPUBLIC_MAGIC,
+             "Expected magic BCRYPT_RSAPUBLIC_MAGIC (%d), got %d\n", BCRYPT_RSAPUBLIC_MAGIC,
+             hdr->Magic);
+            ok(hdr->BitLength == rsaPubKeys[i].decodedModulusLen * 8,
+             "Wrong bit len %d\n", hdr->BitLength);
+            ok(hdr->cbPublicExp == sizeof(DWORD), "Expected cbPublicExp %d, got %d\n",
+              sizeof(DWORD), hdr->cbPublicExp);
+            ok(hdr->cbModulus == rsaPubKeys[i].decodedModulusLen,
+              "Wrong modulus len %d\n", hdr->cbModulus);
+            ok(hdr->cbPrime1 == 0,"Wrong cbPrime1 %d\n", hdr->cbPrime1);
+            ok(hdr->cbPrime2 == 0,"Wrong cbPrime2 %d\n", hdr->cbPrime2);
+            ok(*pubexp== 65537, "Expected pubexp 65537, got %d\n",
+             *pubexp);
+            ok(!memcmp(buf + sizeof(BCRYPT_RSAKEY_BLOB) + sizeof(DWORD),
+             rsaPubKeys[i].modulus, rsaPubKeys[i].decodedModulusLen),
+             "Unexpected modulus\n");
+            LocalFree(buf);
+        }
+    }
+}
+
 static const BYTE intSequence[] = { 0x30, 0x1b, 0x02, 0x01, 0x01, 0x02, 0x01,
  0x7f, 0x02, 0x02, 0x00, 0x80, 0x02, 0x02, 0x01, 0x00, 0x02, 0x01, 0x80, 0x02,
  0x02, 0xff, 0x7f, 0x02, 0x04, 0xba, 0xdd, 0xf0, 0x0d };
@@ -8547,6 +8645,8 @@ START_TEST(encode)
         test_decodeBasicConstraints(encodings[i]);
         test_encodeRsaPublicKey(encodings[i]);
         test_decodeRsaPublicKey(encodings[i]);
+        test_encodeRsaPublicKey_Bcrypt(encodings[i]);
+        test_decodeRsaPublicKey_Bcrypt(encodings[i]);
         test_encodeSequenceOfAny(encodings[i]);
         test_decodeSequenceOfAny(encodings[i]);
         test_encodeExtensions(encodings[i]);
